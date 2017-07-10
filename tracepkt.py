@@ -17,13 +17,11 @@ bpf_text = '''
 // Event structure
 struct route_evt_t {
     /* Routing information */
-    char comm[TASK_COMM_LEN];
     char ifname[IFNAMSIZ];
     u64 netns;
 
     /* Packet type (IPv4 or IPv6) and address */
-    u64 proto;    // familiy << 16
-    u64 l4proto;
+    u64 proto;    // familiy (IPv4 or IPv6)
     u64 icmptype;
     u64 icmpid;   // In practice, this is the PID of the ping process (see "ident" field in https://github.com/iputils/iputils/blob/master/ping_common.c)
     u64 icmpseq;  // Sequence number
@@ -32,42 +30,47 @@ struct route_evt_t {
 };
 BPF_PERF_OUTPUT(route_evt);
 
-#define member_size(type, member) sizeof(((type *)0)->member)
-
 int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, struct net_device *dev, struct netdev_queue *txq, int *ret)
 {
-
     // Cast types. Intermediate cast not needed, kept for readability
     struct sock *sk = first->sk;
     struct inet_sock *inet = inet_sk(sk);
 
     // Built event for userland
     struct route_evt_t evt = {};
-    bpf_get_current_comm(evt.comm, TASK_COMM_LEN);
 
-    // Filter IP packets
-    u16 family = sk->__sk_common.skc_family;
-    u16 iphdroffset = first->network_header;
-    u16 icmphdroffset = first->transport_header;
-    evt.proto = family << 16;
+    // Pre-Compute header addresses
+    char* ip_header_address   = first->head + first->network_header;
+    char* icmp_header_address = first->head + first->transport_header;
+
+    // Abstract IPv4 / IPv6
     u8 proto_icmp;
     u8 proto_icmp_echo_request;
     u8 proto_icmp_echo_reply;
+
+    // Filter IP packets
+    u8 protocol;
+    u16 family = sk->sk_family;
+    evt.proto = sk->sk_family;
     if (family == AF_INET) {
+        struct iphdr* iphdr = (struct iphdr*)ip_header_address;
+
         // Load protocol and address
-        bpf_probe_read(&evt.l4proto, member_size(struct iphdr, protocol),  first->head + iphdroffset + offsetof(struct iphdr, protocol));
-        bpf_probe_read(evt.saddr,    member_size(struct iphdr, saddr),     first->head + iphdroffset + offsetof(struct iphdr, saddr));
-        bpf_probe_read(evt.daddr,    member_size(struct iphdr, daddr),     first->head + iphdroffset + offsetof(struct iphdr, daddr));
+        protocol     = iphdr->protocol;
+        evt.saddr[0] = iphdr->saddr;
+        evt.daddr[0] = iphdr->daddr;
 
         // Load constants
         proto_icmp = IPPROTO_ICMP;
         proto_icmp_echo_request = ICMP_ECHO;
         proto_icmp_echo_reply   = ICMP_ECHOREPLY;
     } else if (family == AF_INET6) {
+        struct ipv6hdr* ipv6hdr = (struct ipv6hdr*)ip_header_address;
+
         // Load protocol and address
-        bpf_probe_read(&evt.l4proto, member_size(struct ipv6hdr, nexthdr),  first->head + iphdroffset + offsetof(struct ipv6hdr, nexthdr));
-        bpf_probe_read(evt.saddr,    member_size(struct ipv6hdr, saddr),    first->head + iphdroffset + offsetof(struct ipv6hdr, saddr));
-        bpf_probe_read(evt.daddr,    member_size(struct ipv6hdr, daddr),    first->head + iphdroffset + offsetof(struct ipv6hdr, daddr));
+        protocol = ipv6hdr->nexthdr;
+        bpf_probe_read(evt.saddr, sizeof(ipv6hdr->saddr), (char*)ipv6hdr + offsetof(struct ipv6hdr, saddr));
+        bpf_probe_read(evt.daddr, sizeof(ipv6hdr->daddr), (char*)ipv6hdr + offsetof(struct ipv6hdr, daddr));
 
         // Load constants
         proto_icmp = IPPROTO_ICMPV6;
@@ -78,29 +81,34 @@ int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, stru
     }
 
     // Filter ICMP packets
-    if (evt.l4proto != proto_icmp) {
+    if (protocol != proto_icmp) {
         return 0;
     }
 
     // Filter ICMP echo request and echo reply
-    struct icmphdr icmphdr;
-    bpf_probe_read(&icmphdr, sizeof(struct icmphdr), first->head + icmphdroffset);
-    if (icmphdr.type != proto_icmp_echo_request && icmphdr.type != proto_icmp_echo_reply) {
+    struct icmphdr* icmphdr = (struct icmphdr*)icmp_header_address;
+    if (icmphdr->type != proto_icmp_echo_request && icmphdr->type != proto_icmp_echo_reply) {
         return 0;
     }
-    evt.icmptype = icmphdr.type;
-    evt.icmpid   = be16_to_cpu(icmphdr.un.echo.id);
-    evt.icmpseq  = be16_to_cpu(icmphdr.un.echo.sequence);
+
+    // Get ICMP info
+    evt.icmptype = icmphdr->type;
+    evt.icmpid   = icmphdr->un.echo.id;
+    evt.icmpseq  = icmphdr->un.echo.sequence;
+
+    // Fix endian
+    evt.icmpid  = be16_to_cpu(evt.icmpid);
+    evt.icmpseq = be16_to_cpu(evt.icmpseq);
 
     // Get netns id
 #ifdef CONFIG_NET_NS
-    evt.netns = sk->__sk_common.skc_net.net->ns.inum;
+    evt.netns = sk->sk_net.net->ns.inum;
 #else
     evt.netns = 0;
 #endif
 
     // Get interface name
-    __builtin_memcpy(&evt.ifname, dev->name, IFNAMSIZ);
+    bpf_probe_read(&evt.ifname, IFNAMSIZ, dev->name);
 
     // Send event to userland
     route_evt.perf_submit(ctx, &evt, sizeof(evt));
@@ -110,19 +118,16 @@ int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, stru
 
 '''
 
-TASK_COMM_LEN = 16 # linux/sched.h
-IFNAMSIZ      = 16 # uapi/linux/if.h
+IFNAMSIZ = 16 # uapi/linux/if.h
 
 class RouteEvt(ct.Structure):
     _fields_ = [
         # Routing information
-        ("comm",    ct.c_char * TASK_COMM_LEN),
         ("ifname",  ct.c_char * IFNAMSIZ),
         ("netns",   ct.c_ulonglong),
 
         # Packet type (IPv4 or IPv6) and address
         ("proto",    ct.c_ulonglong),
-        ("l4proto",  ct.c_ulonglong),
         ("icmptype", ct.c_ulonglong),
         ("icmpid",   ct.c_ulonglong),
         ("icmpseq",  ct.c_ulonglong),
@@ -134,20 +139,21 @@ def event_printer(cpu, data, size):
     # Decode event
     event = ct.cast(data, ct.POINTER(RouteEvt)).contents
 
-    proto_family = event.proto & 0xff
-    proto_type = event.proto >> 16 & 0xff
-
-    saddr = ""
-    daddr = ""
-    if proto_type == AF_INET:
+    # Decode address
+    if event.proto == AF_INET:
         saddr = inet_ntop(AF_INET, pack("=I", event.saddr[0]))
         daddr = inet_ntop(AF_INET, pack("=I", event.daddr[0]))
-    elif proto_type == AF_INET6:
+    elif event.proto == AF_INET6:
         saddr = inet_ntop(AF_INET6, event.saddr)
         daddr = inet_ntop(AF_INET6, event.daddr)
+    else:
+        return
+
+    # Decode direction
+    direction = "request" if event.icmptype in [8, 128] else "reply"
 
     # Print event
-    print "[%12s] %16s ping#%05u.%03u %s -> %s" % (event.netns, event.ifname, event.icmpid, event.icmpseq, saddr, daddr)
+    print "[%12s] %16s %7s #%05u.%03u %s -> %s" % (event.netns, event.ifname, direction, event.icmpid, event.icmpseq, saddr, daddr)
 
 if __name__ == "__main__":
     b = BPF(text=bpf_text)
