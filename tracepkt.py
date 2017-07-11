@@ -30,18 +30,18 @@ struct route_evt_t {
 };
 BPF_PERF_OUTPUT(route_evt);
 
-static int do_dev_event(struct pt_regs *ctx, struct sk_buff *first, struct net_device *dev)
+static int do_dev_event(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev)
 {
     // Cast types. Intermediate cast not needed, kept for readability
-    struct sock *sk = first->sk;
+    struct sock *sk = skb->sk;
     struct inet_sock *inet = inet_sk(sk);
 
     // Built event for userland
     struct route_evt_t evt = {};
 
     // Pre-Compute header addresses
-    char* ip_header_address   = first->head + first->network_header;
-    char* icmp_header_address = first->head + first->transport_header;
+    char* ip_header_address   = skb->head + skb->network_header;
+    char* icmp_header_address = skb->head + skb->transport_header;
 
     // Abstract IPv4 / IPv6
     u8 proto_icmp;
