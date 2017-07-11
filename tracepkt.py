@@ -120,6 +120,10 @@ int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, stru
     return do_dev_event(ctx, first, dev);
 }
 
+int kprobe____dev_forward_skb(struct pt_regs *ctx, struct net_device *dev, struct sk_buff *skb) {
+    return do_dev_event(ctx, skb, dev);
+}
+
 '''
 
 IFNAMSIZ = 16 # uapi/linux/if.h
