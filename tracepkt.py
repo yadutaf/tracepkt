@@ -30,7 +30,7 @@ struct route_evt_t {
 };
 BPF_PERF_OUTPUT(route_evt);
 
-int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, struct net_device *dev, struct netdev_queue *txq, int *ret)
+static int do_dev_event(struct pt_regs *ctx, struct sk_buff *first, struct net_device *dev)
 {
     // Cast types. Intermediate cast not needed, kept for readability
     struct sock *sk = first->sk;
@@ -115,6 +115,10 @@ int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, stru
 
     return 0;
 };
+
+int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *first, struct net_device *dev, struct netdev_queue *txq, int *ret) {
+    return do_dev_event(ctx, first, dev);
+}
 
 '''
 
