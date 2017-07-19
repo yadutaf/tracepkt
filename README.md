@@ -5,12 +5,12 @@ Trace a ping packet journey across network interfaces and namespace on recent Li
 ```
 > ping 172.17.0.2 &
 > sudo python tracepkt.py
-[  4026531957]          docker0 request #13796.001 172.17.0.1 -> 172.17.0.2
-[  4026531957]      veth0e65931 request #13796.001 172.17.0.1 -> 172.17.0.2
-[  4026532395]             eth0   reply #13796.001 172.17.0.2 -> 172.17.0.1
-[  4026531957]          docker0 request #13796.002 172.17.0.1 -> 172.17.0.2
-[  4026531957]      veth0e65931 request #13796.002 172.17.0.1 -> 172.17.0.2
-[  4026532395]             eth0   reply #13796.002 172.17.0.2 -> 172.17.0.1
+[  4026531957]          docker0 request #17735.001 172.17.0.1 -> 172.17.0.2
+[  4026531957]      vetha373ab6 request #17735.001 172.17.0.1 -> 172.17.0.2
+[  4026532258]             eth0 request #17735.001 172.17.0.1 -> 172.17.0.2
+[  4026532258]             eth0   reply #17735.001 172.17.0.2 -> 172.17.0.1
+[  4026531957]      vetha373ab6   reply #17735.001 172.17.0.2 -> 172.17.0.1
+[  4026531957]          docker0   reply #17735.001 172.17.0.2 -> 172.17.0.1
 ...
 ```
 
@@ -18,7 +18,7 @@ The first 2 packets going from the current network namespace to a Docker contain
 
 ## The full story
 
-This repository started as an illustration for https://blog.yadutaf.fr/2017/07/11/tracing-a-packet-journey-thanks-to-ebpf/
+This repository is related to an upcomming blog post on https://blog.yadutaf.fr/. Stay tuned!
 
 ## Usage
 
