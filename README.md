@@ -18,13 +18,13 @@ The first 2 packets going from the current network namespace to a Docker contain
 
 ## The full story
 
-This repository is related to an upcomming blog post on https://blog.yadutaf.fr/. Stay tuned!
+This project started as an illustation for a blog post on perf and eBPF https://blog.yadutaf.fr/2017/07/28/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/.
 
 ## Usage
 
 To use this project, you need a working / recent BCC install on your system. Read more about BCC on their Github repository: https://github.com/iovisor/bcc.
 
-Additionally, you'll need a recent kernel (presumably >= 4.4) and full root privilege.
+Additionally, you'll need a recent kernel (presumably >= 4.7) and full root privilege.
 
 ## License
 
