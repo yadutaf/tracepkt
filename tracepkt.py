@@ -83,6 +83,8 @@ if __name__ == "__main__":
         )
     PING_PID = ping.pid
 
+    print "%14s %16s %7s %s" % ('NETWORK NS', 'INTERFACE', 'TYPE', 'ADDRESSES')
+
     # Listen for event until the ping process has exited
     while ping.poll() is None:
         b.kprobe_poll(10)

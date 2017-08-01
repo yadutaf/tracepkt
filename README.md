@@ -4,6 +4,7 @@ Trace a ping packet on the L2 layer, as it crosses Linux network interfaces and 
 
 ```console
 > sudo python tracepkt.py 172.17.0.2
+    NETWORK NS        INTERFACE    TYPE ADDRESSES
 [  4026531957]          docker0 request 172.17.0.1 -> 172.17.0.2
 [  4026531957]      vetha373ab6 request 172.17.0.1 -> 172.17.0.2
 [  4026532258]             eth0 request 172.17.0.1 -> 172.17.0.2
