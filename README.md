@@ -1,17 +1,15 @@
 # Tracepkt
 
-Trace a ping packet journey across network interfaces and namespace on recent Linux. Supports IPv4 and IPv6.
+Trace a ping packet on the L2 layer, as it crosses Linux network interfaces and namespaces. Supports IPv4 and IPv6.
 
 ```console
-> ping 172.17.0.2 &
-> sudo python tracepkt.py
-[  4026531957]          docker0 request #17735.001 172.17.0.1 -> 172.17.0.2
-[  4026531957]      vetha373ab6 request #17735.001 172.17.0.1 -> 172.17.0.2
-[  4026532258]             eth0 request #17735.001 172.17.0.1 -> 172.17.0.2
-[  4026532258]             eth0   reply #17735.001 172.17.0.2 -> 172.17.0.1
-[  4026531957]      vetha373ab6   reply #17735.001 172.17.0.2 -> 172.17.0.1
-[  4026531957]          docker0   reply #17735.001 172.17.0.2 -> 172.17.0.1
-...
+> sudo python tracepkt.py 172.17.0.2
+[  4026531957]          docker0 request 172.17.0.1 -> 172.17.0.2
+[  4026531957]      vetha373ab6 request 172.17.0.1 -> 172.17.0.2
+[  4026532258]             eth0 request 172.17.0.1 -> 172.17.0.2
+[  4026532258]             eth0   reply 172.17.0.2 -> 172.17.0.1
+[  4026531957]      vetha373ab6   reply 172.17.0.2 -> 172.17.0.1
+[  4026531957]          docker0   reply 172.17.0.2 -> 172.17.0.1
 ```
 
 The first 2 packets going from the current network namespace to a Docker container and going back, crossing a veth pair and a bridge.

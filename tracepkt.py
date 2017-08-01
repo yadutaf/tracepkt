@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+import sys
 from socket import inet_ntop, AF_INET, AF_INET6
 from bcc import BPF
 import ctypes as ct
+import subprocess
 from struct import pack
 
 IFNAMSIZ = 16 # uapi/linux/if.h
@@ -23,9 +25,15 @@ class TestEvt(ct.Structure):
         ("daddr",       ct.c_ulonglong * 2),
     ]
 
+PING_PID="-1"
+
 def event_printer(cpu, data, size):
     # Decode event
     event = ct.cast(data, ct.POINTER(TestEvt)).contents
+
+    # Make sure it is OUR ping process
+    if event.icmpid != PING_PID:
+        return
 
     # Decode address
     if event.ip_version == 4:
@@ -46,12 +54,39 @@ def event_printer(cpu, data, size):
         return
 
     # Print event
-    print "[%12s] %16s %7s #%05u.%03u %s -> %s" % (event.netns, event.ifname, direction, event.icmpid, event.icmpseq, saddr, daddr)
+    print "[%12s] %16s %7s %s -> %s" % (event.netns, event.ifname, direction, saddr, daddr)
 
 if __name__ == "__main__":
+    # Get arguments
+    if len(sys.argv) == 1:
+        TARGET = '127.0.0.1'
+    elif len(sys.argv) == 2:
+        TARGET = sys.argv[1]
+    else:
+        print "Usage: %s [TARGET_IP]" % (sys.argv[0])
+        sys.exit(1)
+
+    # Build probe and open event buffer
     b = BPF(src_file='tracepkt.c')
     b["route_evt"].open_perf_buffer(event_printer)
 
-    while True:
-        b.kprobe_poll()
+    # Launch a background ping process
+    with open('/dev/null', 'r') as devnull:
+        ping = subprocess.Popen([
+                '/bin/ping',
+                '-c1',
+                TARGET,
+            ],
+            stdout=devnull,
+            stderr=devnull,
+            close_fds=True,
+        )
+    PING_PID = ping.pid
+
+    # Listen for event until the ping process has exited
+    while ping.poll() is None:
+        b.kprobe_poll(10)
+
+    # Forward ping's exit code
+    sys.exit(ping.poll())
 
