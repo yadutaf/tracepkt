@@ -4,9 +4,15 @@
 #include <uapi/linux/icmp.h>
 #include <uapi/linux/icmpv6.h>
 #include <net/inet_sock.h>
+#include <linux/netfilter/x_tables.h>
+
+#define ROUTE_EVT_IF 1
 
 // Event structure
 struct route_evt_t {
+    /* Content flags */
+    u64 flags;
+
     /* Routing information */
     char ifname[IFNAMSIZ];
     u64 netns;
@@ -41,20 +47,26 @@ BPF_PERF_OUTPUT(route_evt);
   * Common tracepoint handler. Detect IPv4/IPv6 ICMP echo request and replies and
   * emit event with address, interface and namespace.
   */
-static inline int do_trace(void* ctx, struct sk_buff* skb)
+static inline int do_trace_skb(struct route_evt_t *evt, void *ctx, struct sk_buff *skb)
 {
     // Prepare event for userland
-    struct route_evt_t evt = {};
+    evt->flags |= ROUTE_EVT_IF;
 
     // Compute MAC header address
     char* head;
     u16 mac_header;
+    u16 network_header;
 
     member_read(&head,       skb, head);
     member_read(&mac_header, skb, mac_header);
+    member_read(&network_header, skb, network_header);
+
+    if(network_header == 0) {
+        network_header = mac_header + MAC_HEADER_SIZE;
+    }
 
     // Compute IP Header address
-    char* ip_header_address = head + mac_header + MAC_HEADER_SIZE;
+    char *ip_header_address = head + network_header;
 
     // Abstract IPv4 / IPv6
     u8 proto_icmp;
@@ -64,11 +76,11 @@ static inline int do_trace(void* ctx, struct sk_buff* skb)
     u8 l4proto;
 
     // Load IP protocol version
-    bpf_probe_read(&evt.ip_version, sizeof(u8), ip_header_address);
-    evt.ip_version = evt.ip_version >> 4 & 0xf;
+    bpf_probe_read(&evt->ip_version, sizeof(u8), ip_header_address);
+    evt->ip_version = evt->ip_version >> 4 & 0xf;
 
     // Filter IP packets
-    if (evt.ip_version == 4) {
+    if (evt->ip_version == 4) {
         // Load IP Header
         struct iphdr iphdr;
         bpf_probe_read(&iphdr, sizeof(iphdr), ip_header_address);
@@ -76,22 +88,22 @@ static inline int do_trace(void* ctx, struct sk_buff* skb)
         // Load protocol and address
         icmp_offset_from_ip_header = iphdr.ihl * 4;
         l4proto      = iphdr.protocol;
-        evt.saddr[0] = iphdr.saddr;
-        evt.daddr[0] = iphdr.daddr;
+        evt->saddr[0] = iphdr.saddr;
+        evt->daddr[0] = iphdr.daddr;
 
         // Load constants
         proto_icmp = IPPROTO_ICMP;
         proto_icmp_echo_request = ICMP_ECHO;
         proto_icmp_echo_reply   = ICMP_ECHOREPLY;
-    } else if (evt.ip_version == 6) {
+    } else if (evt->ip_version == 6) {
         // Assume no option header --> fixed size header
         struct ipv6hdr* ipv6hdr = (struct ipv6hdr*)ip_header_address;
         icmp_offset_from_ip_header = sizeof(*ipv6hdr);
 
         // Load protocol and address
-        bpf_probe_read(&l4proto,  sizeof(ipv6hdr->nexthdr), (char*)ipv6hdr + offsetof(struct ipv6hdr, nexthdr));
-        bpf_probe_read(evt.saddr, sizeof(ipv6hdr->saddr),   (char*)ipv6hdr + offsetof(struct ipv6hdr, saddr));
-        bpf_probe_read(evt.daddr, sizeof(ipv6hdr->daddr),   (char*)ipv6hdr + offsetof(struct ipv6hdr, daddr));
+        bpf_probe_read(&l4proto,  sizeof(ipv6hdr->nexthdr),  (char*)ipv6hdr + offsetof(struct ipv6hdr, nexthdr));
+        bpf_probe_read(evt->saddr, sizeof(ipv6hdr->saddr),   (char*)ipv6hdr + offsetof(struct ipv6hdr, saddr));
+        bpf_probe_read(evt->daddr, sizeof(ipv6hdr->daddr),   (char*)ipv6hdr + offsetof(struct ipv6hdr, daddr));
 
         // Load constants
         proto_icmp = IPPROTO_ICMPV6;
@@ -117,54 +129,70 @@ static inline int do_trace(void* ctx, struct sk_buff* skb)
     }
 
     // Get ICMP info
-    evt.icmptype = icmphdr.type;
-    evt.icmpid   = icmphdr.un.echo.id;
-    evt.icmpseq  = icmphdr.un.echo.sequence;
+    evt->icmptype = icmphdr.type;
+    evt->icmpid   = icmphdr.un.echo.id;
+    evt->icmpseq  = icmphdr.un.echo.sequence;
 
     // Fix endian
-    evt.icmpid  = be16_to_cpu(evt.icmpid);
-    evt.icmpseq = be16_to_cpu(evt.icmpseq);
+    evt->icmpid  = be16_to_cpu(evt->icmpid);
+    evt->icmpseq = be16_to_cpu(evt->icmpseq);
 
     // Get device pointer, we'll need it to get the name and network namespace
     struct net_device *dev;
     member_read(&dev, skb, dev);
 
     // Load interface name
-    bpf_probe_read(&evt.ifname, IFNAMSIZ, dev->name);
+    bpf_probe_read(&evt->ifname, IFNAMSIZ, dev->name);
 
 #ifdef CONFIG_NET_NS
     struct net* net;
 
-    // Get netns id. The code below is equivalent to: evt.netns = dev->nd_net.net->ns.inum
+    // Get netns id. The code below is equivalent to: evt->netns = dev->nd_net.net->ns.inum
     possible_net_t *skc_net = &dev->nd_net;
     member_read(&net, skc_net, net);
     struct ns_common* ns = member_address(net, ns);
-    member_read(&evt.netns, ns, inum);
+    member_read(&evt->netns, ns, inum);
 #endif
-
-    // Send event
-    route_evt.perf_submit(ctx, &evt, sizeof(evt));
 
     return 0;
 }
 
+static inline int do_trace(void *ctx, struct sk_buff *skb)
+{
+    // Prepare event for userland
+    struct route_evt_t evt = {};
+
+    // Process packet
+    int ret = do_trace_skb(&evt, ctx, skb);
+
+    // Send event
+    route_evt.perf_submit(ctx, &evt, sizeof(evt));
+
+    // Return
+    return ret;
+}
+
 /**
-  * Attach to Kernel Tracepoints
-  */
+ * Attach to Kernel Interface Tracepoints
+ */
 
-TRACEPOINT_PROBE(net, netif_rx) {
-    return do_trace(args, (struct sk_buff*)args->skbaddr);
+TRACEPOINT_PROBE(net, netif_rx)
+{
+    return do_trace(args, (struct sk_buff *)args->skbaddr);
 }
 
-TRACEPOINT_PROBE(net, net_dev_queue) {
-    return do_trace(args, (struct sk_buff*)args->skbaddr);
+TRACEPOINT_PROBE(net, net_dev_queue)
+{
+    return do_trace(args, (struct sk_buff *)args->skbaddr);
 }
 
-TRACEPOINT_PROBE(net, napi_gro_receive_entry) {
-    return do_trace(args, (struct sk_buff*)args->skbaddr);
+TRACEPOINT_PROBE(net, napi_gro_receive_entry)
+{
+    return do_trace(args, (struct sk_buff *)args->skbaddr);
 }
 
-TRACEPOINT_PROBE(net, netif_receive_skb_entry) {
-    return do_trace(args, (struct sk_buff*)args->skbaddr);
+TRACEPOINT_PROBE(net, netif_receive_skb_entry)
+{
+    return do_trace(args, (struct sk_buff *)args->skbaddr);
 }
 

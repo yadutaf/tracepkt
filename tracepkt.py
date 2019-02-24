@@ -10,8 +10,14 @@ from struct import pack
 
 IFNAMSIZ = 16 # uapi/linux/if.h
 
+ROUTE_EVT_IF = 1
+ROUTE_EVT_IPTABLE = 2
+
 class TestEvt(ct.Structure):
     _fields_ = [
+        # Content flags
+        ("flags",   ct.c_ulonglong),
+
         # Routing information
         ("ifname",  ct.c_char * IFNAMSIZ),
         ("netns",   ct.c_ulonglong),
@@ -30,6 +36,10 @@ PING_PID="-1"
 def event_printer(cpu, data, size):
     # Decode event
     event = ct.cast(data, ct.POINTER(TestEvt)).contents
+
+    # Make sure this is an interface event
+    if event.flags & ROUTE_EVT_IF != ROUTE_EVT_IF:
+        return
 
     # Make sure it is OUR ping process
     if event.icmpid != PING_PID:
@@ -53,8 +63,11 @@ def event_printer(cpu, data, size):
     else:
         return
 
+    # Decode flow
+    flow = "%s -> %s" % (saddr, daddr)
+
     # Print event
-    print "[%12s] %16s %7s %s -> %s" % (event.netns, event.ifname, direction, saddr, daddr)
+    print "[%12s] %16s %7s %-34s%s" % (event.netns, event.ifname, direction, flow, iptables)
 
 if __name__ == "__main__":
     # Get arguments
@@ -91,4 +104,3 @@ if __name__ == "__main__":
 
     # Forward ping's exit code
     sys.exit(ping.poll())
-
