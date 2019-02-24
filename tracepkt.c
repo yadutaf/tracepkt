@@ -7,6 +7,7 @@
 #include <linux/netfilter/x_tables.h>
 
 #define ROUTE_EVT_IF 1
+#define ROUTE_EVT_IPTABLE 2
 
 // Event structure
 struct route_evt_t {
@@ -24,8 +25,22 @@ struct route_evt_t {
     u64 icmpseq;    // Sequence number
     u64 saddr[2];   // Source address. IPv4: store in saddr[0]
     u64 daddr[2];   // Dest   address. IPv4: store in daddr[0]
+
+    /* Iptables trace */
+    u64 hook;
+    u64 verdict;
+    char tablename[XT_TABLE_MAXNAMELEN];
 };
 BPF_PERF_OUTPUT(route_evt);
+
+// Arg stash structure
+struct ipt_do_table_args
+{
+    struct sk_buff *skb;
+    const struct nf_hook_state *state;
+    struct xt_table *table;
+};
+BPF_HASH(cur_ipt_do_table_args, u32, struct ipt_do_table_args);
 
 #define MAC_HEADER_SIZE 14;
 #define member_address(source_struct, source_member)            \
@@ -196,3 +211,83 @@ TRACEPOINT_PROBE(net, netif_receive_skb_entry)
     return do_trace(args, (struct sk_buff *)args->skbaddr);
 }
 
+/**
+ * Common iptables functions
+ */
+
+static inline int __ipt_do_table_in(struct pt_regs *ctx, struct sk_buff *skb, const struct nf_hook_state *state, struct xt_table *table)
+{
+    u32 pid = bpf_get_current_pid_tgid();
+
+    // stash the arguments for use in retprobe
+    struct ipt_do_table_args args = {
+        .skb = skb,
+        .state = state,
+        .table = table,
+    };
+    cur_ipt_do_table_args.update(&pid, &args);
+    return 0;
+};
+
+static inline int __ipt_do_table_out(struct pt_regs * ctx)
+{
+    // Load arguments
+    u32 pid = bpf_get_current_pid_tgid();
+    struct ipt_do_table_args *args;
+    args = cur_ipt_do_table_args.lookup(&pid);
+    if (args == 0)
+    {
+        return 0; // missed entry
+    }
+    cur_ipt_do_table_args.delete(&pid);
+
+    // Prepare event for userland
+    struct route_evt_t evt = {
+        .flags = ROUTE_EVT_IPTABLE,
+    };
+
+    // Load packet information
+    struct sk_buff *skb = args->skb;
+    do_trace_skb(&evt, ctx, skb);
+
+    // Store the hook
+    const struct nf_hook_state *state = args->state;
+    member_read(&evt.hook, state, hook);
+
+    // Store the table name
+    struct xt_table *table = args->table;
+    member_read(&evt.tablename, table, name);
+
+    // Store the verdict
+    int ret = PT_REGS_RC(ctx);
+    evt.verdict = ret;
+
+    // Send event
+    route_evt.perf_submit(ctx, &evt, sizeof(evt));
+
+    return 0;
+}
+
+/**
+ * Attach to Kernel iptables main function
+ */
+
+int kprobe__ipt_do_table(struct pt_regs *ctx, struct sk_buff *skb, const struct nf_hook_state *state, struct xt_table *table)
+{
+    return __ipt_do_table_in(ctx, skb, state, table);
+};
+
+int kretprobe__ipt_do_table(struct pt_regs *ctx)
+{
+    return __ipt_do_table_out(ctx);
+}
+
+int kprobe__ip6t_do_table(struct pt_regs *ctx, struct sk_buff *skb, const struct nf_hook_state *state, struct xt_table *table)
+{
+    return __ipt_do_table_in(ctx, skb, state, table);
+};
+
+int kretprobe__ip6t_do_table(struct pt_regs *ctx)
+{
+    return __ipt_do_table_out(ctx);
+}

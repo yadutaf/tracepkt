@@ -9,6 +9,27 @@ import subprocess
 from struct import pack
 
 IFNAMSIZ = 16 # uapi/linux/if.h
+XT_TABLE_MAXNAMELEN = 32 # uapi/linux/netfilter/x_tables.h
+
+# uapi/linux/netfilter.h
+NF_VERDICT_NAME = [
+    'DROP',
+    'ACCEPT',
+    'STOLEN',
+    'QUEUE',
+    'REPEAT',
+    'STOP',
+]
+
+# uapi/linux/netfilter.h
+# net/ipv4/netfilter/ip_tables.c
+HOOKNAMES = [
+    "PREROUTING",
+    "INPUT",
+    "FORWARD",
+    "OUTPUT",
+    "POSTROUTING",
+]
 
 ROUTE_EVT_IF = 1
 ROUTE_EVT_IPTABLE = 2
@@ -29,9 +50,22 @@ class TestEvt(ct.Structure):
         ("icmpseq",     ct.c_ulonglong),
         ("saddr",       ct.c_ulonglong * 2),
         ("daddr",       ct.c_ulonglong * 2),
+
+        # Iptables trace
+        ("hook",        ct.c_ulonglong),
+        ("verdict",     ct.c_ulonglong),
+        ("tablename",   ct.c_char * XT_TABLE_MAXNAMELEN),
     ]
 
 PING_PID="-1"
+
+def _get(l, index, default):
+    '''
+    Get element at index in l or return the default
+    '''
+    if index < len(l):
+        return l[index]
+    return default
 
 def event_printer(cpu, data, size):
     # Decode event
@@ -66,6 +100,13 @@ def event_printer(cpu, data, size):
     # Decode flow
     flow = "%s -> %s" % (saddr, daddr)
 
+    # Optionally decode iptables events
+    iptables = ""
+    if event.flags & ROUTE_EVT_IPTABLE == ROUTE_EVT_IPTABLE:
+        verdict = _get(NF_VERDICT_NAME, event.verdict, "~UNK~")
+        hook = _get(HOOKNAMES, event.hook, "~UNK~")
+        iptables = " %7s.%-12s:%s" % (event.tablename, hook, verdict)
+
     # Print event
     print "[%12s] %16s %7s %-34s%s" % (event.netns, event.ifname, direction, flow, iptables)
 
@@ -96,7 +137,7 @@ if __name__ == "__main__":
         )
     PING_PID = ping.pid
 
-    print "%14s %16s %7s %s" % ('NETWORK NS', 'INTERFACE', 'TYPE', 'ADDRESSES')
+    print "%14s %16s %7s %-34s %s" % ('NETWORK NS', 'INTERFACE', 'TYPE', 'ADDRESSES', 'IPTABLES')
 
     # Listen for event until the ping process has exited
     while ping.poll() is None:
