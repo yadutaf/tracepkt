@@ -3,10 +3,7 @@
 #include <uapi/linux/ipv6.h>
 #include <uapi/linux/icmp.h>
 #include <uapi/linux/icmpv6.h>
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wtautological-compare"
 #include <net/inet_sock.h>
-#pragma clang diagnostic pop
 
 // Event structure
 struct route_evt_t {
